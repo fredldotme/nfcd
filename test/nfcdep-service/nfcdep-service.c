@@ -408,7 +408,7 @@ int main(int argc, char* argv[])
         app.path = "/test";
         app.multiple = multiple;
         if (out_file) {
-            app.output_fd = open(out_file, O_RDWR | O_CREAT);
+            app.output_fd = open(out_file, O_RDWR | O_CREAT, 0600);
         } else {
             app.output_fd = dup(STDOUT_FILENO);
         }
