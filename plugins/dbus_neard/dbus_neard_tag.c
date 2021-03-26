@@ -37,6 +37,7 @@
 
 #include <nfc_ndef.h>
 #include <nfc_tag.h>
+#include <nfc_tag_t2.h>
 #include <nfc_target.h>
 
 #include <gutil_strv.h>
@@ -50,6 +51,7 @@ enum {
 
 enum {
     NEARD_CALL_DEACTIVATE,
+    NEARD_CALL_WRITE,
     NEARD_EVENT_COUNT
 };
 
@@ -233,6 +235,285 @@ dbus_neard_tag_handle_deactivate(
     return TRUE;
 }
 
+static
+NfcNdefRecT*
+dbus_neard_tag_new_text_data(
+    GVariant *arg_attributes)
+{
+    GVariant* encoding = NULL;
+    GVariant* language = NULL;
+    GVariant* representation = NULL;
+    gchar* langstr = NULL;
+    gsize langstr_length;
+    gchar* req_data = NULL;
+    gsize req_data_length = 0;
+    NfcNdefRecT* ret = NULL;
+
+    encoding = g_variant_lookup_value(arg_attributes,
+        "Encoding", G_VARIANT_TYPE_STRING);
+    language = g_variant_lookup_value(arg_attributes,
+        "Language", G_VARIANT_TYPE_STRING);
+    representation = g_variant_lookup_value(arg_attributes,
+        "Representation", G_VARIANT_TYPE_STRING);
+
+    req_data = g_variant_get_string(representation, &req_data_length);
+    langstr = g_variant_get_string(language, &langstr_length);
+
+    g_variant_unref(encoding);
+    g_variant_unref(language);
+    g_variant_unref(representation);
+
+    ret = nfc_ndef_rec_t_new(req_data, langstr);
+
+    g_free(req_data);
+    g_free(langstr);
+
+    return ret;
+}
+
+static
+NfcNdefRecU*
+dbus_neard_tag_new_uri_data(
+    GVariant *arg_attributes)
+{
+    GVariant* uri = NULL;
+    gchar* req_data = NULL;
+    gsize req_data_length = 0;
+    NfcNdefRecU* ret = NULL;
+
+    uri = g_variant_lookup_value(arg_attributes,
+        "URI", G_VARIANT_TYPE_STRING);
+    req_data = g_variant_get_string(uri, &req_data_length);
+
+    g_variant_unref(uri);
+
+    ret = nfc_ndef_rec_u_new(req_data);
+
+    g_free(req_data);
+
+    return ret;
+}
+
+static
+NfcNdefRecSp*
+dbus_neard_tag_new_smartposter_data(
+    GVariant *arg_attributes)
+{
+    GVariant* uri = NULL;
+    gchar* req_data = NULL;
+    gsize req_data_length = 0;
+    const char* ptr;
+    gboolean backslash = FALSE;
+    GStrV* params = NULL;
+    GString* buf = g_string_new("");
+    guint n;
+    NfcNdefRecSp* ret = NULL;
+
+    uri = g_variant_lookup_value(arg_attributes,
+        "URI", G_VARIANT_TYPE_STRING);
+    req_data = g_variant_get_string(uri, &req_data_length);
+
+    g_variant_unref(uri);
+
+    ptr = req_data;
+    while (*ptr) {
+        if (backslash) {
+            backslash = FALSE;
+            switch (*ptr) {
+            case 'a': g_string_append_c(buf, '\a'); break;
+            case 'b': g_string_append_c(buf, '\b'); break;
+            case 'e': g_string_append_c(buf, '\e'); break;
+            case 'f': g_string_append_c(buf, '\f'); break;
+            case 'n': g_string_append_c(buf, '\n'); break;
+            case 'r': g_string_append_c(buf, '\r'); break;
+            case 't': g_string_append_c(buf, '\t'); break;
+            case 'v': g_string_append_c(buf, '\v'); break;
+            case '\\': g_string_append_c(buf, '\\'); break;
+            case '\'': g_string_append_c(buf, '\''); break;
+            case '"': g_string_append_c(buf, '\"'); break;
+            case '?': g_string_append_c(buf, '\?'); break;
+            case ',': g_string_append_c(buf, ','); break;
+            default:
+                /* Could support more but is it worth the trouble? */
+                g_string_append_c(buf, '\\');
+                g_string_append_c(buf, *ptr);
+                break;
+            }
+        } else if (*ptr == '\\') {
+            backslash = TRUE;
+        } else if (*ptr == ',') {
+            params = gutil_strv_add(params, buf->str);
+            g_string_set_size(buf, 0);
+        } else {
+            g_string_append_c(buf, *ptr);
+        }
+        ptr++;
+    }
+    if (backslash) {
+        g_string_append_c(buf, '\\');
+    }
+    params = gutil_strv_add(params, buf->str);
+    n = gutil_strv_length(params);
+
+    /* URL, title, action, type, size, path */
+    if (n >= 1 && n <= 6) {
+        gboolean ok = TRUE;
+        int act = NFC_NDEF_SP_ACT_DEFAULT;
+        int size = 0;
+        NfcNdefMedia media;
+        const NfcNdefMedia* icon = NULL;
+
+        memset(&media, 0, sizeof(media));
+        if (n > 2) {
+            const char* val = params[2];
+
+            if (val[0] && !gutil_parse_int(val, 0, &act)) {
+                fprintf(stderr, "Can't parse action '%s'\n", val);
+                ok = FALSE;
+            }
+        }
+        if (ok && n > 4) {
+            const char* val = params[4];
+
+            /* Well, it's actually unsigned int but it doesn't really matter */
+            if (val[0] && (!gutil_parse_int(val, 0, &size) || size < 0)) {
+                fprintf(stderr, "Can't parse size '%s'\n", val);
+                ok = FALSE;
+            }
+        }
+        if (ok) {
+            const char* title = (n > 1) ? params[1] : NULL;
+            const char* type = (n > 3) ? params[3] : NULL;
+            ret = nfc_ndef_rec_sp_new(params[0], title, NULL,
+                type, size, act, icon);
+        }
+    }
+
+    g_string_free(buf, TRUE);
+    g_strfreev(params);
+    return ret;
+}
+
+static
+gboolean
+dbus_neard_tag_handle_write(
+    OrgNeardTag* iface,
+    GDBusMethodInvocation* call,
+    GVariant *arg_attributes,
+    gpointer user_data)
+{
+    DBusNeardTag* self = user_data;
+    GVariant* type = NULL;
+    gchar* type_str = NULL;
+    gsize type_length = 0;
+    NfcNdefRecT* t = NULL;
+    NfcNdefRecU* u = NULL;
+    NfcNdefRecSp* sp = NULL;
+    GUtilData* ndef = NULL;
+    guint8* data = NULL;
+    guint size = 0;
+    guint i = 0;
+
+    GDEBUG("Write to %s", self->tag->name);
+    GDEBUG("Variant data: '%s'", g_variant_print(arg_attributes, FALSE));
+
+    if (!NFC_IS_TAG_T2(self->tag)) {
+        GWARN("Cannot write to non-Type 2 tags");
+        return FALSE;
+    }
+
+    type = g_variant_lookup_value(arg_attributes,
+        "Type", G_VARIANT_TYPE_STRING);
+    type_str = g_variant_get_string(type, &type_length);
+
+    g_variant_unref(type);
+
+    if (!type) {
+        GWARN("Failed to determine type for writing");
+        /*g_dbus_method_invocation_return_error_literal(call,
+            DBUS_SERVICE_ERROR, DBUS_SERVICE_ERROR_FAILED,
+            "Failed to write due to invalid argument");*/
+        return FALSE;
+    }
+
+    if (g_strcmp0(type_str, "Text") == 0) {
+        t = dbus_neard_tag_new_text_data(arg_attributes);
+        if (!t) {
+            GWARN("Failed to get text data from write request");
+            g_free(type_str);
+            return FALSE;
+        }
+        ndef = &(t->rec.raw);
+    } else if (g_strcmp0(type_str, "URI") == 0) {
+        u = dbus_neard_tag_new_uri_data(arg_attributes);
+        if (!u) {
+            GWARN("Failed to get URI data from write request");
+            g_free(type_str);
+            return FALSE;
+        }
+        ndef = &(u->rec.raw);
+    } else if (g_strcmp0(type_str, "SmartPoster") == 0) {
+        sp = dbus_neard_tag_new_smartposter_data(arg_attributes);
+        if (!sp) {
+            GWARN("Failed to get SmartPoster data from write request");
+            g_free(type_str);
+            return FALSE;
+        }
+        ndef = &(sp->rec.raw);
+    } else {
+        GWARN("Unsupported write type '%s'", type_str);
+        g_free(type_str);
+        return FALSE;
+    }
+    g_free(type_str);
+
+    /* Add space for type, length (up to 3 bytes) and terminator */
+    size = ndef->size + 3;
+    if (ndef->size >= 0xff) {
+        size += 2; /* Will use three consecutive bytes format */
+    }
+
+    data = g_malloc(size);
+
+    data[i++] = 0x03; /* NDEF Message */
+    if (ndef->size < 0xff) {
+        /* One byte format */
+        data[i++] = (guint8)ndef->size;
+    } else {
+        /* Three consecutive bytes format */
+        data[i++] = 0xff;
+        data[i++] = (guint8)(ndef->size >> 8);
+        data[i++] = (guint8)ndef->size;
+    }
+
+    /* Copy representation into data buffer */
+    memcpy(data + i, ndef->bytes, ndef->size);
+    i += ndef->size;
+    data[i++] = 0xfe; /* Terminator */
+    memset(data + i, 0, size - i);
+
+    /* Clean up obsolete record data */
+    ndef = NULL;
+    if (t)
+        nfc_ndef_rec_unref(t);
+    if (u)
+        nfc_ndef_rec_unref(u);
+    if (sp)
+        nfc_ndef_rec_unref(sp);
+
+    /* Reference to-be-written data as GBytes */
+    GBytes* write_bytes = g_bytes_new(data, size);
+    if (!nfc_tag_t2_write_data(NFC_TAG_T2(self->tag), 0, write_bytes, NULL, NULL, NULL)) {
+        GWARN("Failed to write");
+        g_bytes_unref(write_bytes);
+        return FALSE;
+    }
+    g_bytes_unref(write_bytes);
+
+    org_neard_tag_complete_write(iface, call);
+    return TRUE;
+}
+
 DBusNeardTag*
 dbus_neard_tag_new(
     NfcTag* tag,
@@ -257,6 +538,9 @@ dbus_neard_tag_new(
     self->neard_event_id[NEARD_CALL_DEACTIVATE] =
         g_signal_connect(self->iface, "handle-deactivate",
         G_CALLBACK(dbus_neard_tag_handle_deactivate), self);
+    self->neard_event_id[NEARD_CALL_WRITE] =
+        g_signal_connect(self->iface, "handle-write",
+        G_CALLBACK(dbus_neard_tag_handle_write), self);
 
     switch (tag->type) {
     case NFC_TAG_TYPE_FELICA:
