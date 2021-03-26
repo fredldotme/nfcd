@@ -361,7 +361,7 @@ dbus_neard_tag_new_smartposter_data(
             const char* val = params[2];
 
             if (val[0] && !gutil_parse_int(val, 0, &act)) {
-                fprintf(stderr, "Can't parse action '%s'\n", val);
+                GWARN("Can't parse action '%s'", val);
                 ok = FALSE;
             }
         }
@@ -370,7 +370,7 @@ dbus_neard_tag_new_smartposter_data(
 
             /* Well, it's actually unsigned int but it doesn't really matter */
             if (val[0] && (!gutil_parse_int(val, 0, &size) || size < 0)) {
-                fprintf(stderr, "Can't parse size '%s'\n", val);
+                GWARN("Can't parse size '%s'", val);
                 ok = FALSE;
             }
         }
