@@ -243,9 +243,9 @@ dbus_neard_tag_new_text_data(
     GVariant* encoding = NULL;
     GVariant* language = NULL;
     GVariant* representation = NULL;
-    gchar* langstr = NULL;
+    const char* langstr = NULL;
     gsize langstr_length;
-    gchar* req_data = NULL;
+    const char* req_data = NULL;
     gsize req_data_length = 0;
     NfcNdefRecT* ret = NULL;
 
@@ -259,14 +259,11 @@ dbus_neard_tag_new_text_data(
     req_data = g_variant_get_string(representation, &req_data_length);
     langstr = g_variant_get_string(language, &langstr_length);
 
+    ret = nfc_ndef_rec_t_new(req_data, langstr);
+
     g_variant_unref(encoding);
     g_variant_unref(language);
     g_variant_unref(representation);
-
-    ret = nfc_ndef_rec_t_new(req_data, langstr);
-
-    g_free(req_data);
-    g_free(langstr);
 
     return ret;
 }
@@ -277,7 +274,7 @@ dbus_neard_tag_new_uri_data(
     GVariant *arg_attributes)
 {
     GVariant* uri = NULL;
-    gchar* req_data = NULL;
+    const char* req_data = NULL;
     gsize req_data_length = 0;
     NfcNdefRecU* ret = NULL;
 
@@ -285,11 +282,9 @@ dbus_neard_tag_new_uri_data(
         "URI", G_VARIANT_TYPE_STRING);
     req_data = g_variant_get_string(uri, &req_data_length);
 
-    g_variant_unref(uri);
-
     ret = nfc_ndef_rec_u_new(req_data);
 
-    g_free(req_data);
+    g_variant_unref(uri);
 
     return ret;
 }
@@ -300,7 +295,7 @@ dbus_neard_tag_new_smartposter_data(
     GVariant *arg_attributes)
 {
     GVariant* uri = NULL;
-    gchar* req_data = NULL;
+    const char* req_data = NULL;
     gsize req_data_length = 0;
     const char* ptr;
     gboolean backslash = FALSE;
@@ -312,8 +307,6 @@ dbus_neard_tag_new_smartposter_data(
     uri = g_variant_lookup_value(arg_attributes,
         "URI", G_VARIANT_TYPE_STRING);
     req_data = g_variant_get_string(uri, &req_data_length);
-
-    g_variant_unref(uri);
 
     ptr = req_data;
     while (*ptr) {
@@ -391,6 +384,7 @@ dbus_neard_tag_new_smartposter_data(
 
     g_string_free(buf, TRUE);
     g_strfreev(params);
+    g_variant_unref(uri);
     return ret;
 }
 
@@ -404,7 +398,7 @@ dbus_neard_tag_handle_write(
 {
     DBusNeardTag* self = user_data;
     GVariant* type = NULL;
-    gchar* type_str = NULL;
+    const char* type_str = NULL;
     gsize type_length = 0;
     NfcNdefRecT* t = NULL;
     NfcNdefRecU* u = NULL;
@@ -426,21 +420,11 @@ dbus_neard_tag_handle_write(
         "Type", G_VARIANT_TYPE_STRING);
     type_str = g_variant_get_string(type, &type_length);
 
-    g_variant_unref(type);
-
-    if (!type) {
-        GWARN("Failed to determine type for writing");
-        /*g_dbus_method_invocation_return_error_literal(call,
-            DBUS_SERVICE_ERROR, DBUS_SERVICE_ERROR_FAILED,
-            "Failed to write due to invalid argument");*/
-        return FALSE;
-    }
-
     if (g_strcmp0(type_str, "Text") == 0) {
         t = dbus_neard_tag_new_text_data(arg_attributes);
         if (!t) {
             GWARN("Failed to get text data from write request");
-            g_free(type_str);
+            g_variant_unref(type);
             return FALSE;
         }
         ndef = &(t->rec.raw);
@@ -448,7 +432,7 @@ dbus_neard_tag_handle_write(
         u = dbus_neard_tag_new_uri_data(arg_attributes);
         if (!u) {
             GWARN("Failed to get URI data from write request");
-            g_free(type_str);
+            g_variant_unref(type);
             return FALSE;
         }
         ndef = &(u->rec.raw);
@@ -456,16 +440,16 @@ dbus_neard_tag_handle_write(
         sp = dbus_neard_tag_new_smartposter_data(arg_attributes);
         if (!sp) {
             GWARN("Failed to get SmartPoster data from write request");
-            g_free(type_str);
+            g_variant_unref(type);
             return FALSE;
         }
         ndef = &(sp->rec.raw);
     } else {
         GWARN("Unsupported write type '%s'", type_str);
-        g_free(type_str);
+        g_variant_unref(type);
         return FALSE;
     }
-    g_free(type_str);
+    g_variant_unref(type);
 
     /* Add space for type, length (up to 3 bytes) and terminator */
     size = ndef->size + 3;
