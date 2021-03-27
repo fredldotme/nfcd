@@ -497,7 +497,7 @@ dbus_neard_tag_new(
         org_neard_tag_set_type_(self->iface, type->name);
     }
     org_neard_tag_set_adapter(self->iface, adapter_path);
-    org_neard_tag_set_read_only(self->iface, TRUE);
+    org_neard_tag_set_read_only(self->iface, FALSE);
     g_dbus_object_manager_server_export(object_manager, object);
     g_object_unref(object);
 
