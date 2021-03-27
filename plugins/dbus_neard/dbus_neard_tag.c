@@ -297,94 +297,17 @@ dbus_neard_tag_new_smartposter_data(
     GVariant* uri = NULL;
     const char* req_data = NULL;
     gsize req_data_length = 0;
-    const char* ptr;
-    gboolean backslash = FALSE;
-    GStrV* params = NULL;
-    GString* buf = g_string_new("");
-    guint n;
     NfcNdefRecSp* ret = NULL;
 
     uri = g_variant_lookup_value(arg_attributes,
         "URI", G_VARIANT_TYPE_STRING);
     req_data = g_variant_get_string(uri, &req_data_length);
 
-    ptr = req_data;
-    while (*ptr) {
-        if (backslash) {
-            backslash = FALSE;
-            switch (*ptr) {
-            case 'a': g_string_append_c(buf, '\a'); break;
-            case 'b': g_string_append_c(buf, '\b'); break;
-            case 'e': g_string_append_c(buf, '\e'); break;
-            case 'f': g_string_append_c(buf, '\f'); break;
-            case 'n': g_string_append_c(buf, '\n'); break;
-            case 'r': g_string_append_c(buf, '\r'); break;
-            case 't': g_string_append_c(buf, '\t'); break;
-            case 'v': g_string_append_c(buf, '\v'); break;
-            case '\\': g_string_append_c(buf, '\\'); break;
-            case '\'': g_string_append_c(buf, '\''); break;
-            case '"': g_string_append_c(buf, '\"'); break;
-            case '?': g_string_append_c(buf, '\?'); break;
-            case ',': g_string_append_c(buf, ','); break;
-            default:
-                /* Could support more but is it worth the trouble? */
-                g_string_append_c(buf, '\\');
-                g_string_append_c(buf, *ptr);
-                break;
-            }
-        } else if (*ptr == '\\') {
-            backslash = TRUE;
-        } else if (*ptr == ',') {
-            params = gutil_strv_add(params, buf->str);
-            g_string_set_size(buf, 0);
-        } else {
-            g_string_append_c(buf, *ptr);
-        }
-        ptr++;
-    }
-    if (backslash) {
-        g_string_append_c(buf, '\\');
-    }
-    params = gutil_strv_add(params, buf->str);
-    n = gutil_strv_length(params);
+    ret = nfc_ndef_rec_sp_new(req_data, NULL, NULL, NULL, 0,
+        NFC_NDEF_SP_ACT_DEFAULT, NULL);
 
-    /* URL, title, action, type, size, path */
-    if (n >= 1 && n <= 6) {
-        gboolean ok = TRUE;
-        int act = NFC_NDEF_SP_ACT_DEFAULT;
-        int size = 0;
-        NfcNdefMedia media;
-        const NfcNdefMedia* icon = NULL;
-
-        memset(&media, 0, sizeof(media));
-        if (n > 2) {
-            const char* val = params[2];
-
-            if (val[0] && !gutil_parse_int(val, 0, &act)) {
-                GWARN("Can't parse action '%s'", val);
-                ok = FALSE;
-            }
-        }
-        if (ok && n > 4) {
-            const char* val = params[4];
-
-            /* Well, it's actually unsigned int but it doesn't really matter */
-            if (val[0] && (!gutil_parse_int(val, 0, &size) || size < 0)) {
-                GWARN("Can't parse size '%s'", val);
-                ok = FALSE;
-            }
-        }
-        if (ok) {
-            const char* title = (n > 1) ? params[1] : NULL;
-            const char* type = (n > 3) ? params[3] : NULL;
-            ret = nfc_ndef_rec_sp_new(params[0], title, NULL,
-                type, size, act, icon);
-        }
-    }
-
-    g_string_free(buf, TRUE);
-    g_strfreev(params);
     g_variant_unref(uri);
+
     return ret;
 }
 
@@ -413,6 +336,9 @@ dbus_neard_tag_handle_write(
 
     if (!NFC_IS_TAG_T2(self->tag)) {
         GWARN("Cannot write to non-Type 2 tags");
+        g_dbus_method_invocation_return_error_literal(call,
+            DBUS_NEARD_ERROR, DBUS_NEARD_ERROR_INVALID_ARGS,
+            "Cannot write to non-Type 2 tags");
         return FALSE;
     }
 
@@ -424,6 +350,9 @@ dbus_neard_tag_handle_write(
         t = dbus_neard_tag_new_text_data(arg_attributes);
         if (!t) {
             GWARN("Failed to get text data from write request");
+            g_dbus_method_invocation_return_error_literal(call,
+                DBUS_NEARD_ERROR, DBUS_NEARD_ERROR_INVALID_ARGS,
+                "Failed to get text data from write request");
             g_variant_unref(type);
             return FALSE;
         }
@@ -432,6 +361,9 @@ dbus_neard_tag_handle_write(
         u = dbus_neard_tag_new_uri_data(arg_attributes);
         if (!u) {
             GWARN("Failed to get URI data from write request");
+            g_dbus_method_invocation_return_error_literal(call,
+                DBUS_NEARD_ERROR, DBUS_NEARD_ERROR_INVALID_ARGS,
+                "Failed to get URI data from write request");
             g_variant_unref(type);
             return FALSE;
         }
@@ -440,12 +372,18 @@ dbus_neard_tag_handle_write(
         sp = dbus_neard_tag_new_smartposter_data(arg_attributes);
         if (!sp) {
             GWARN("Failed to get SmartPoster data from write request");
+            g_dbus_method_invocation_return_error_literal(call,
+                DBUS_NEARD_ERROR, DBUS_NEARD_ERROR_INVALID_ARGS,
+                "Failed to get SmartPoster data from write request");
             g_variant_unref(type);
             return FALSE;
         }
         ndef = &(sp->rec.raw);
     } else {
         GWARN("Unsupported write type '%s'", type_str);
+        g_dbus_method_invocation_return_error_literal(call,
+            DBUS_NEARD_ERROR, DBUS_NEARD_ERROR_INVALID_ARGS,
+            "Unsupported write type");
         g_variant_unref(type);
         return FALSE;
     }
@@ -479,16 +417,19 @@ dbus_neard_tag_handle_write(
     /* Clean up obsolete record data */
     ndef = NULL;
     if (t)
-        nfc_ndef_rec_unref(t);
+        nfc_ndef_rec_unref(&t->rec);
     if (u)
-        nfc_ndef_rec_unref(u);
+        nfc_ndef_rec_unref(&u->rec);
     if (sp)
-        nfc_ndef_rec_unref(sp);
+        nfc_ndef_rec_unref(&sp->rec);
 
     /* Reference to-be-written data as GBytes */
-    GBytes* write_bytes = g_bytes_new(data, size);
+    GBytes* write_bytes = g_bytes_new_take(data, size);
     if (!nfc_tag_t2_write_data(NFC_TAG_T2(self->tag), 0, write_bytes, NULL, NULL, NULL)) {
         GWARN("Failed to write");
+        g_dbus_method_invocation_return_error_literal(call,
+            DBUS_NEARD_ERROR, DBUS_NEARD_ERROR_INVALID_ARGS,
+            "Failed to write");
         g_bytes_unref(write_bytes);
         return FALSE;
     }
